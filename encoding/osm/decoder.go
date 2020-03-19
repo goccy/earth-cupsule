@@ -1,12 +1,10 @@
 package osm
 
 import (
-	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,7 +12,6 @@ import (
 
 	"github.com/goccy/earth-cupsule/format"
 	"github.com/mitchellh/ioprogress"
-	"golang.org/x/sync/errgroup"
 	"golang.org/x/xerrors"
 )
 
@@ -128,73 +125,18 @@ func (d *Decoder) prepare() error {
 	return nil
 }
 
-func (d *Decoder) addSkippableWay(way *format.Way, rel *format.Relation, member *format.Member) error {
-	if way.Skippable {
-		return nil
-	}
-	if !way.Tags.HasInterestingTags() {
-		way.Skippable = true
-		bytes, err := json.Marshal(way)
-		if err != nil {
-			return xerrors.Errorf("failed to marshal way: %w", err)
-		}
-		if err := d.storage.AddWay(way.ID, bytes); err != nil {
-			return xerrors.Errorf("failed to add way: %w", err)
-		}
-		return nil
-	}
-	typ := rel.Tags.Find("type")
-	isPolygon := typ == "multipolygon" || typ == "boundary"
-	if !isPolygon {
-		return nil
-	}
-	if member.Role == "outer" {
-		if !way.Tags.HasInterestingTagsWithTags(rel.Tags) {
-			way.Skippable = true
-			bytes, err := json.Marshal(way)
-			if err != nil {
-				return xerrors.Errorf("failed to marshal way: %w", err)
-			}
-			if err := d.storage.AddWay(way.ID, bytes); err != nil {
-				return xerrors.Errorf("failed to add way: %w", err)
-			}
-		}
-	} else if member.Role == "inner" {
-		if !way.Tags.HasInterestingTags() {
-			way.Skippable = true
-			bytes, err := json.Marshal(way)
-			if err != nil {
-				return xerrors.Errorf("failed to marshal way: %w", err)
-			}
-			if err := d.storage.AddWay(way.ID, bytes); err != nil {
-				return xerrors.Errorf("failed to add way: %w", err)
-			}
-		}
-	}
-	return nil
-}
-
 func (d *Decoder) setNextElement(e format.OSM) error {
 	if d.lastElement != nil {
 		switch e := d.lastElement.(type) {
 		case *format.Node:
-			bytes, err := json.Marshal(e)
-			defer e.Release()
-			if err != nil {
-				return xerrors.Errorf("failed to marshal node: %w", err)
-			}
-			if err := d.storage.AddNode(e.ID, bytes); err != nil {
+			if err := d.storage.AddNode(e); err != nil {
 				return xerrors.Errorf("failed to add node: %w", err)
 			}
 		case *format.Way:
 			if len(e.NodeRefs) == 0 {
 				return xerrors.New("invalid way")
 			}
-			bytes, err := json.Marshal(e)
-			if err != nil {
-				return xerrors.Errorf("failed to marshal way: %w", err)
-			}
-			if err := d.storage.AddWay(e.ID, bytes); err != nil {
+			if err := d.storage.AddWay(e); err != nil {
 				return xerrors.Errorf("failed to add way: %w", err)
 			}
 			for _, ref := range e.NodeRefs {
@@ -206,11 +148,7 @@ func (d *Decoder) setNextElement(e format.OSM) error {
 			if len(e.Members) == 0 {
 				return xerrors.New("invalid relation")
 			}
-			bytes, err := json.Marshal(e)
-			if err != nil {
-				return xerrors.Errorf("failed to marshal relation: %w", err)
-			}
-			if err := d.storage.AddRelation(e.ID, bytes); err != nil {
+			if err := d.storage.AddRelation(e); err != nil {
 				return xerrors.Errorf("failed to add relation: %w", err)
 			}
 			for _, m := range e.Members {
@@ -423,64 +361,6 @@ func (d *Decoder) decode() error {
 	return nil
 }
 
-func (d *Decoder) decodeNode(v []byte) (*format.Node, error) {
-	var node format.Node
-	if err := json.Unmarshal(v, &node); err != nil {
-		return nil, xerrors.Errorf("failed to unmarshal node %s: %w", string(v), err)
-	}
-	return &node, nil
-}
-
-func (d *Decoder) decodeWay(v []byte) (*format.Way, error) {
-	var way format.Way
-	if err := json.Unmarshal(v, &way); err != nil {
-		return nil, xerrors.Errorf("failed to unmarshal way: %w", err)
-	}
-	for _, ref := range way.NodeRefs {
-		bytes, err := d.storage.Node(ref.Ref)
-		if err != nil {
-			continue
-		}
-		if bytes == nil {
-			continue
-		}
-		node, err := d.decodeNode(bytes)
-		if err != nil {
-			return nil, xerrors.Errorf("failed to decode node: %w", err)
-		}
-		way.Nodes = append(way.Nodes, node)
-	}
-	return &way, nil
-}
-
-func (d *Decoder) decodeRelation(v []byte) (*format.Relation, error) {
-	var rel format.Relation
-	if err := json.Unmarshal(v, &rel); err != nil {
-		return nil, xerrors.Errorf("failed to unmarshal relation: %w", err)
-	}
-	for _, m := range rel.Members {
-		if m.Type != format.TypeWay {
-			continue
-		}
-		bytes, err := d.storage.Way(m.Ref)
-		if err != nil {
-			continue
-		}
-		if bytes == nil {
-			continue
-		}
-		way, err := d.decodeWay(bytes)
-		if err != nil {
-			return nil, xerrors.Errorf("failed to decode way in member: %w", err)
-		}
-		if err := d.addSkippableWay(way, &rel, m); err != nil {
-			return nil, xerrors.Errorf("failed to skip way: %w", err)
-		}
-		m.Way = way
-	}
-	return &rel, nil
-}
-
 func (d *Decoder) Node(cb func(*format.Node) error) {
 	d.nodeCallback = cb
 }
@@ -497,103 +377,19 @@ func (d *Decoder) Decode() error {
 	if err := d.prepare(); err != nil {
 		return xerrors.Errorf("failed to prepare decoding: %w", err)
 	}
-	cpus := runtime.NumCPU()
 	if d.nodeCallback != nil {
-		var idx int
-		var eg errgroup.Group
-		d.storage.AllNodes(func(v []byte) error {
-			if idx == cpus {
-				if err := eg.Wait(); err != nil {
-					return xerrors.Errorf("failed to wait: %w", err)
-				}
-				idx = 0
-			}
-			idx++
-			eg.Go(func() error {
-				node, err := d.decodeNode(v)
-				if err != nil {
-					return xerrors.Errorf("failed to decode node: %w", err)
-				}
-				if exists := d.storage.ExistsNodeInWay(node.ID); exists {
-					if exists := d.storage.ExistsWayInMember(node.ID); !exists {
-						if !node.Tags.HasInterestingTags() {
-							return nil
-						}
-					}
-				}
-				if err := d.nodeCallback(node); err != nil {
-					return xerrors.Errorf("failed to node callback: %w", err)
-				}
-				return nil
-			})
-			return nil
-		})
-		if idx > 0 {
-			if err := eg.Wait(); err != nil {
-				return xerrors.Errorf("failed to wait: %w", err)
-			}
+		if err := d.storage.AllNodes(d.nodeCallback); err != nil {
+			return xerrors.Errorf("failed to iterate node: %w", err)
 		}
 	}
 	if d.wayCallback != nil {
-		var (
-			idx int
-			eg  errgroup.Group
-		)
-		d.storage.AllWays(func(v []byte) error {
-			if idx == cpus {
-				if err := eg.Wait(); err != nil {
-					return xerrors.Errorf("failed to wait: %w", err)
-				}
-				idx = 0
-			}
-			idx++
-			eg.Go(func() error {
-				way, err := d.decodeWay(v)
-				if err != nil {
-					return xerrors.Errorf("failed to decode way: %w", err)
-				}
-				if err := d.wayCallback(way); err != nil {
-					return xerrors.Errorf("failed to way callback: %w", err)
-				}
-				return nil
-			})
-			return nil
-		})
-		if idx > 0 {
-			if err := eg.Wait(); err != nil {
-				return xerrors.Errorf("failed to wait: %w", err)
-			}
+		if err := d.storage.AllWays(d.wayCallback); err != nil {
+			return xerrors.Errorf("failed to iterate way: %w", err)
 		}
 	}
 	if d.relCallback != nil {
-		var (
-			idx int
-			eg  errgroup.Group
-		)
-		d.storage.AllRelations(func(v []byte) error {
-			if idx == cpus {
-				if err := eg.Wait(); err != nil {
-					return xerrors.Errorf("failed to wait: %w", err)
-				}
-				idx = 0
-			}
-			idx++
-			eg.Go(func() error {
-				rel, err := d.decodeRelation(v)
-				if err != nil {
-					return xerrors.Errorf("failed to decode relation: %w", err)
-				}
-				if err := d.relCallback(rel); err != nil {
-					return xerrors.Errorf("failed to relation callback: %w", err)
-				}
-				return nil
-			})
-			return nil
-		})
-		if idx > 0 {
-			if err := eg.Wait(); err != nil {
-				return xerrors.Errorf("failed to wait: %w", err)
-			}
+		if err := d.storage.AllRelations(d.relCallback); err != nil {
+			return xerrors.Errorf("failed to iterate relation: %w", err)
 		}
 	}
 	return nil
