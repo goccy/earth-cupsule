@@ -13,6 +13,10 @@ import (
 	"golang.org/x/xerrors"
 )
 
+var (
+	ErrForceStop = xerrors.New("force stop")
+)
+
 type Decoder struct {
 	file         *os.File
 	storage      *Storage
@@ -115,7 +119,7 @@ func (d *Decoder) prepare() error {
 	}
 	for {
 		if d.isNeededStop {
-			return xerrors.New("force stop")
+			return ErrForceStop
 		}
 		if pos, err := d.dec.Decode(); err != nil {
 			if xerrors.Is(err, io.EOF) {
@@ -160,17 +164,41 @@ func (d *Decoder) Decode() error {
 		return xerrors.Errorf("failed to prepare decoding: %w", err)
 	}
 	if d.nodeCallback != nil {
-		if err := d.storage.AllNodes(d.nodeCallback); err != nil {
+		if err := d.storage.AllNodes(func(node *format.Node) error {
+			if d.isNeededStop {
+				return ErrForceStop
+			}
+			if err := d.nodeCallback(node); err != nil {
+				return xerrors.Errorf("failed to node callback: %w", err)
+			}
+			return nil
+		}); err != nil {
 			return xerrors.Errorf("failed to iterate node: %w", err)
 		}
 	}
 	if d.wayCallback != nil {
-		if err := d.storage.AllWays(d.wayCallback); err != nil {
+		if err := d.storage.AllWays(func(way *format.Way) error {
+			if d.isNeededStop {
+				return ErrForceStop
+			}
+			if err := d.wayCallback(way); err != nil {
+				return xerrors.Errorf("failed to way callback: %w", err)
+			}
+			return nil
+		}); err != nil {
 			return xerrors.Errorf("failed to iterate way: %w", err)
 		}
 	}
 	if d.relCallback != nil {
-		if err := d.storage.AllRelations(d.relCallback); err != nil {
+		if err := d.storage.AllRelations(func(rel *format.Relation) error {
+			if d.isNeededStop {
+				return ErrForceStop
+			}
+			if err := d.relCallback(rel); err != nil {
+				return xerrors.Errorf("failed to rel callback: %w", err)
+			}
+			return nil
+		}); err != nil {
 			return xerrors.Errorf("failed to iterate relation: %w", err)
 		}
 	}

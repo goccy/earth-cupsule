@@ -99,6 +99,9 @@ func main() {
 		}
 	}()
 	if err := c.convert(args[0], args[1]); err != nil {
+		if xerrors.Is(err, osm.ErrForceStop) {
+			return
+		}
 		log.Printf("%+v", err)
 	}
 }
