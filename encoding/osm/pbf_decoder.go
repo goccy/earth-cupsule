@@ -320,7 +320,7 @@ func (d *PBFDecoder) decodeNodes(block *pbf.PrimitiveBlock, nodes []*pbf.Node) e
 			Timestamp:   info.Timestamp,
 			Tags:        format.Tags(tags),
 		}
-		if d.nodeCallback != nil {
+		if d.nodeCallback != nil && node.Tags.HasInterestingTags() {
 			if err := d.nodeCallback(node); err != nil {
 				return xerrors.Errorf("failed to node callback: %w", err)
 			}
@@ -369,7 +369,7 @@ func (d *PBFDecoder) decodeDenseNodes(block *pbf.PrimitiveBlock, nodes *pbf.Dens
 			Timestamp:   info.Timestamp,
 			Tags:        format.Tags(tags),
 		}
-		if d.nodeCallback != nil {
+		if d.nodeCallback != nil && node.Tags.HasInterestingTags() {
 			if err := d.nodeCallback(node); err != nil {
 				return xerrors.Errorf("failed to node callback: %w", err)
 			}
