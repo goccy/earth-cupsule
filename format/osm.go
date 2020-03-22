@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/pkg/errors"
 	"github.com/vmihailenco/msgpack/v4"
 	"golang.org/x/xerrors"
 )
@@ -212,16 +211,7 @@ func (n *Node) DecodeMsgpack(dec *msgpack.Decoder) error {
 	if err != nil {
 		return xerrors.Errorf("failed to decode tags length: %w", err)
 	}
-	n.ID = id
-	n.Lat = lat
-	n.Lon = lon
-	n.User = user
-	n.UserID = userID
-	n.Visible = visible
-	n.Version = version
-	n.ChangesetID = changeset
-	n.Timestamp = timestamp
-	n.Tags = make(Tags, tagLen)
+	tags := make(Tags, tagLen)
 	for i := 0; i < tagLen; i++ {
 		key, err := dec.DecodeString()
 		if err != nil {
@@ -231,8 +221,18 @@ func (n *Node) DecodeMsgpack(dec *msgpack.Decoder) error {
 		if err != nil {
 			return xerrors.Errorf("failed to decode tag value: %w", err)
 		}
-		n.Tags[key] = value
+		tags[key] = value
 	}
+	n.ID = id
+	n.Lat = lat
+	n.Lon = lon
+	n.User = user
+	n.UserID = userID
+	n.Visible = visible
+	n.Version = version
+	n.ChangesetID = changeset
+	n.Timestamp = timestamp
+	n.Tags = tags
 	return nil
 }
 
@@ -242,19 +242,6 @@ func (n *Node) GetID() int64 {
 
 type NodeRef struct {
 	Ref int64
-}
-
-func (n *NodeRef) MarshalJSON() ([]byte, error) {
-	return json.Marshal(n.Ref)
-}
-
-func (n *NodeRef) UnmarshalJSON(bytes []byte) error {
-	var v int64
-	if err := json.Unmarshal(bytes, &v); err != nil {
-		return errors.WithStack(err)
-	}
-	n.Ref = v
-	return nil
 }
 
 type NodeRefs []*NodeRef
@@ -273,6 +260,119 @@ type Way struct {
 	Skippable   bool `xml:"-"`
 
 	Nodes []*Node `xml:"-"`
+}
+
+func (w *Way) EncodeMsgpack(enc *msgpack.Encoder) error {
+	if err := enc.EncodeInt64(w.ID); err != nil {
+		return xerrors.Errorf("failed to encode id: %w", err)
+	}
+	if err := enc.EncodeString(w.User); err != nil {
+		return xerrors.Errorf("failed to encode user: %w", err)
+	}
+	if err := enc.EncodeInt64(w.UserID); err != nil {
+		return xerrors.Errorf("failed to encode user_id: %w", err)
+	}
+	if err := enc.EncodeBool(w.Visible); err != nil {
+		return xerrors.Errorf("failed to encode visible: %w", err)
+	}
+	if err := enc.EncodeInt64(w.Version); err != nil {
+		return xerrors.Errorf("failed to encode version: %w", err)
+	}
+	if err := enc.EncodeInt64(w.ChangesetID); err != nil {
+		return xerrors.Errorf("failed to encode changeset: %w", err)
+	}
+	if err := enc.EncodeTime(w.Timestamp); err != nil {
+		return xerrors.Errorf("failed to encode timestamp: %w", err)
+	}
+	if err := enc.EncodeArrayLen(len(w.NodeRefs)); err != nil {
+		return xerrors.Errorf("failed to encode noderefs length: %w", err)
+	}
+	for _, ref := range w.NodeRefs {
+		if err := enc.EncodeInt64(ref.Ref); err != nil {
+			return xerrors.Errorf("failed to encode ref: %w", err)
+		}
+	}
+	if err := enc.EncodeMapLen(len(w.Tags)); err != nil {
+		return xerrors.Errorf("failed to encode tags length: %w", err)
+	}
+	for k, v := range w.Tags {
+		if err := enc.EncodeString(k); err != nil {
+			return xerrors.Errorf("failed to encode key: %w", err)
+		}
+		if err := enc.EncodeString(v); err != nil {
+			return xerrors.Errorf("failed to encode value: %w", err)
+		}
+	}
+	return nil
+}
+
+func (w *Way) DecodeMsgpack(dec *msgpack.Decoder) error {
+	id, err := dec.DecodeInt64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode id: %w", err)
+	}
+	user, err := dec.DecodeString()
+	if err != nil {
+		return xerrors.Errorf("failed to decode user: %w", err)
+	}
+	userID, err := dec.DecodeInt64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode user_id: %w", err)
+	}
+	visible, err := dec.DecodeBool()
+	if err != nil {
+		return xerrors.Errorf("failed to decode visible: %w", err)
+	}
+	version, err := dec.DecodeInt64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode version: %w", err)
+	}
+	changeset, err := dec.DecodeInt64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode changeset: %w", err)
+	}
+	timestamp, err := dec.DecodeTime()
+	if err != nil {
+		return xerrors.Errorf("failed to decode timestamp: %w", err)
+	}
+	nodeRefLen, err := dec.DecodeArrayLen()
+	if err != nil {
+		return xerrors.Errorf("failed to decode noderefs length: %w", err)
+	}
+	nodeRefs := make(NodeRefs, nodeRefLen)
+	for i := 0; i < nodeRefLen; i++ {
+		ref, err := dec.DecodeInt64()
+		if err != nil {
+			return xerrors.Errorf("failed to decode ref: %w", err)
+		}
+		nodeRefs[i] = &NodeRef{Ref: ref}
+	}
+	tagLen, err := dec.DecodeMapLen()
+	if err != nil {
+		return xerrors.Errorf("failed to decode tags length: %w", err)
+	}
+	tags := make(Tags, tagLen)
+	for i := 0; i < tagLen; i++ {
+		key, err := dec.DecodeString()
+		if err != nil {
+			return xerrors.Errorf("failed to decode tag key: %w", err)
+		}
+		value, err := dec.DecodeString()
+		if err != nil {
+			return xerrors.Errorf("failed to decode tag value: %w", err)
+		}
+		tags[key] = value
+	}
+	w.ID = id
+	w.User = user
+	w.UserID = userID
+	w.Visible = visible
+	w.Version = version
+	w.ChangesetID = changeset
+	w.Timestamp = timestamp
+	w.NodeRefs = nodeRefs
+	w.Tags = tags
+	return nil
 }
 
 func (w *Way) toLineString() LineString {
@@ -325,6 +425,119 @@ type Relation struct {
 	Timestamp   time.Time
 	Tags        Tags
 	Members     Members
+}
+
+func (r *Relation) EncodeMsgpack(enc *msgpack.Encoder) error {
+	if err := enc.EncodeInt64(r.ID); err != nil {
+		return xerrors.Errorf("failed to encode id: %w", err)
+	}
+	if err := enc.EncodeString(r.User); err != nil {
+		return xerrors.Errorf("failed to encode user: %w", err)
+	}
+	if err := enc.EncodeInt64(r.UserID); err != nil {
+		return xerrors.Errorf("failed to encode user_id: %w", err)
+	}
+	if err := enc.EncodeBool(r.Visible); err != nil {
+		return xerrors.Errorf("failed to encode visible: %w", err)
+	}
+	if err := enc.EncodeInt64(r.Version); err != nil {
+		return xerrors.Errorf("failed to encode version: %w", err)
+	}
+	if err := enc.EncodeInt64(r.ChangesetID); err != nil {
+		return xerrors.Errorf("failed to encode changeset: %w", err)
+	}
+	if err := enc.EncodeTime(r.Timestamp); err != nil {
+		return xerrors.Errorf("failed to encode timestamp: %w", err)
+	}
+	if err := enc.EncodeArrayLen(len(r.Members)); err != nil {
+		return xerrors.Errorf("failed to encode members length: %w", err)
+	}
+	for _, member := range r.Members {
+		if err := member.EncodeMsgpack(enc); err != nil {
+			return xerrors.Errorf("failed to encode member: %w", err)
+		}
+	}
+	if err := enc.EncodeMapLen(len(r.Tags)); err != nil {
+		return xerrors.Errorf("failed to encode tags length: %w", err)
+	}
+	for k, v := range r.Tags {
+		if err := enc.EncodeString(k); err != nil {
+			return xerrors.Errorf("failed to encode key: %w", err)
+		}
+		if err := enc.EncodeString(v); err != nil {
+			return xerrors.Errorf("failed to encode value: %w", err)
+		}
+	}
+	return nil
+}
+
+func (r *Relation) DecodeMsgpack(dec *msgpack.Decoder) error {
+	id, err := dec.DecodeInt64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode id: %w", err)
+	}
+	user, err := dec.DecodeString()
+	if err != nil {
+		return xerrors.Errorf("failed to decode user: %w", err)
+	}
+	userID, err := dec.DecodeInt64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode user_id: %w", err)
+	}
+	visible, err := dec.DecodeBool()
+	if err != nil {
+		return xerrors.Errorf("failed to decode visible: %w", err)
+	}
+	version, err := dec.DecodeInt64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode version: %w", err)
+	}
+	changeset, err := dec.DecodeInt64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode changeset: %w", err)
+	}
+	timestamp, err := dec.DecodeTime()
+	if err != nil {
+		return xerrors.Errorf("failed to decode timestamp: %w", err)
+	}
+	membersLen, err := dec.DecodeArrayLen()
+	if err != nil {
+		return xerrors.Errorf("failed to decode members length: %w", err)
+	}
+	members := make(Members, membersLen)
+	for i := 0; i < membersLen; i++ {
+		member := new(Member)
+		if err := member.DecodeMsgpack(dec); err != nil {
+			return xerrors.Errorf("failed to decode member: %w", err)
+		}
+		members[i] = member
+	}
+	tagLen, err := dec.DecodeMapLen()
+	if err != nil {
+		return xerrors.Errorf("failed to decode tags length: %w", err)
+	}
+	tags := make(Tags, tagLen)
+	for i := 0; i < tagLen; i++ {
+		key, err := dec.DecodeString()
+		if err != nil {
+			return xerrors.Errorf("failed to decode tag key: %w", err)
+		}
+		value, err := dec.DecodeString()
+		if err != nil {
+			return xerrors.Errorf("failed to decode tag value: %w", err)
+		}
+		tags[key] = value
+	}
+	r.ID = id
+	r.User = user
+	r.UserID = userID
+	r.Visible = visible
+	r.Version = version
+	r.ChangesetID = changeset
+	r.Timestamp = timestamp
+	r.Members = members
+	r.Tags = tags
+	return nil
 }
 
 func (r *Relation) ToFeature() *Feature {
@@ -448,6 +661,78 @@ type Member struct {
 	Orientation Orientation
 
 	Way *Way `xml:"-"`
+}
+
+func (m *Member) EncodeMsgpack(enc *msgpack.Encoder) error {
+	if err := enc.EncodeString(string(m.Type)); err != nil {
+		return xerrors.Errorf("failed to encode type: %w", err)
+	}
+	if err := enc.EncodeInt64(m.Ref); err != nil {
+		return xerrors.Errorf("failed to encode ref: %w", err)
+	}
+	if err := enc.EncodeString(m.Role); err != nil {
+		return xerrors.Errorf("failed to encode role: %w", err)
+	}
+	if err := enc.EncodeInt64(m.Version); err != nil {
+		return xerrors.Errorf("failed to encode version: %w", err)
+	}
+	if err := enc.EncodeInt64(m.ChangesetID); err != nil {
+		return xerrors.Errorf("failed to encode changeset: %w", err)
+	}
+	if err := enc.EncodeFloat64(m.Lat); err != nil {
+		return xerrors.Errorf("failed to encode lat: %w", err)
+	}
+	if err := enc.EncodeFloat64(m.Lon); err != nil {
+		return xerrors.Errorf("failed to encode lon: %w", err)
+	}
+	if err := enc.EncodeInt8(int8(m.Orientation)); err != nil {
+		return xerrors.Errorf("failed to encode orientation: %w", err)
+	}
+	return nil
+}
+
+func (m *Member) DecodeMsgpack(dec *msgpack.Decoder) error {
+	typ, err := dec.DecodeString()
+	if err != nil {
+		return xerrors.Errorf("failed to decode type: %w", err)
+	}
+	ref, err := dec.DecodeInt64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode id: %w", err)
+	}
+	role, err := dec.DecodeString()
+	if err != nil {
+		return xerrors.Errorf("failed to decode role: %w", err)
+	}
+	version, err := dec.DecodeInt64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode version: %w", err)
+	}
+	changeset, err := dec.DecodeInt64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode changeset: %w", err)
+	}
+	lat, err := dec.DecodeFloat64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode lat: %w", err)
+	}
+	lon, err := dec.DecodeFloat64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode lon: %w", err)
+	}
+	orientation, err := dec.DecodeInt8()
+	if err != nil {
+		return xerrors.Errorf("failed to decode orientation: %w", err)
+	}
+	m.Type = Type(typ)
+	m.Ref = ref
+	m.Role = role
+	m.Version = version
+	m.ChangesetID = changeset
+	m.Lat = lat
+	m.Lon = lon
+	m.Orientation = Orientation(orientation)
+	return nil
 }
 
 func (m *Member) IsWay() bool {
