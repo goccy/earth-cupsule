@@ -1,0 +1,169 @@
+syntax = "proto3";
+
+package pbf;
+
+// source: http://wiki.openstreetmap.org/wiki/PBF_Format
+
+message BlobHeader {
+  string type = 1;
+  bytes indexdata = 2;
+  int32 datasize = 3;
+}
+
+message Blob {
+  bytes raw = 1; // No compression
+  int32 raw_size = 2; // Only set when compressed, to the uncompressed size
+  bytes zlib_data = 3;
+}
+
+message Node {
+  sint64 id   = 1;
+  repeated uint32 keys = 2 [packed = true]; // String IDs.
+  repeated uint32 vals = 3 [packed = true]; // String IDs.
+  Info info            = 4; // May be omitted in omitmeta
+  sint64 lat  = 8;
+  sint64 lon  = 9;
+}
+
+message Way {
+  int64 id    = 1;
+  repeated uint32 keys = 2 [packed = true];
+  repeated uint32 vals = 3 [packed = true];
+  
+  Info info            = 4;
+  repeated sint64 refs = 8 [packed = true];  // DELTA coded
+}
+
+message Relation {
+  enum MemberType {
+    NODE = 0;
+    WAY = 1;
+    RELATION = 2;
+  } 
+  int64 id = 1;
+  
+  // Parallel arrays.
+  repeated uint32 keys = 2 [packed = true];
+  repeated uint32 vals = 3 [packed = true];
+  
+  Info info = 4;
+  
+  // Parallel arrays
+  repeated int32 roles_sid = 8 [packed = true];
+  repeated sint64 memids = 9 [packed = true]; // DELTA encoded
+  repeated MemberType types = 10 [packed = true];
+}
+
+message HeaderBBox {
+  sint64 left   = 1;
+  sint64 right  = 2;
+  sint64 top    = 3;
+  sint64 bottom = 4;
+}
+
+message HeaderBlock {
+  HeaderBBox bbox = 1;
+  /* Additional tags to aid in parsing this dataset */
+  repeated string required_features = 4;
+  repeated string optional_features = 5;
+  
+  string writingprogram = 16;
+  string source = 17; // From the bbox field.
+
+  /* Tags that allow continuing an Osmosis replication */
+
+  // replication timestamp, expressed in seconds since the epoch,
+  // otherwise the same value as in the "timestamp=..." field
+  // in the state.txt file used by Osmosis
+  int64 osmosis_replication_timestamp = 32;
+
+  // replication sequence number (sequenceNumber in state.txt)
+  int64 osmosis_replication_sequence_number = 33;
+
+  // replication base URL (from Osmosis' configuration.txt file)
+  string osmosis_replication_base_url = 34;
+}
+
+
+message PrimitiveBlock {
+  StringTable stringtable = 1;
+  repeated PrimitiveGroup primitivegroup = 2;
+
+  // Granularity, units of nanodegrees, used to store coordinates in this block
+  int32 granularity = 17; 
+
+  // Offset value between the output coordinates coordinates and the granularity grid, in units of nanodegrees.
+  int64 lat_offset = 19;
+  int64 lon_offset = 20; 
+
+  // Granularity of dates, normally represented in units of milliseconds since the 1970 epoch.
+  int32 date_granularity = 18; 
+
+  // Proposed extension:
+  //optional BBox bbox = XX;
+}
+
+message ChangeSet {
+  int64 id = 1;
+}
+
+message PrimitiveGroup {
+  repeated Node     nodes = 1;
+  DenseNodes dense        = 2;
+  repeated Way      ways  = 3;
+  repeated Relation relations   = 4;
+  repeated ChangeSet changesets = 5;
+}
+
+message StringTable {
+  repeated string s = 1;
+}
+
+message Info {
+  int32 version   = 1;
+  int32 timestamp = 2;
+  int64 changeset = 3;
+  int32 uid       = 4;
+  int32 user_sid  = 5; // String IDs
+
+  // The visible flag is used to store history information. It indicates that
+  // the current object version has been created by a delete operation on the
+  // OSM API.
+  // When a writer sets this flag, it MUST add a required_features tag with
+  // value "HistoricalInformation" to the HeaderBlock.
+  // If this flag is not available for some object it MUST be assumed to be
+  // true if the file has the required_features tag "HistoricalInformation"
+  // set.
+  bool visible = 6;
+}
+
+message DenseNodes {
+  repeated sint64 id = 1 [packed = true]; // DELTA coded
+  
+  //repeated Info info = 4;
+  DenseInfo denseinfo = 5;
+  
+  repeated sint64 lat = 8 [packed = true]; // DELTA coded
+  repeated sint64 lon = 9 [packed = true]; // DELTA coded
+
+  // Special packing of keys and vals into one array. May be empty if all nodes in this block are tagless.
+  repeated int32 keys_vals = 10 [packed = true]; 
+}
+
+message DenseInfo {
+  repeated int32 version = 1 [packed = true]; 
+  repeated sint64 timestamp = 2 [packed = true]; // DELTA coded
+  repeated sint64 changeset = 3 [packed = true]; // DELTA coded
+  repeated sint32 uid = 4 [packed = true]; // DELTA coded
+  repeated sint32 user_sid = 5 [packed = true]; // String IDs for usernames. DELTA coded
+  
+  // The visible flag is used to store history information. It indicates that
+  // the current object version has been created by a delete operation on the
+  // OSM API.
+  // When a writer sets this flag, it MUST add a required_features tag with
+  // value "HistoricalInformation" to the HeaderBlock.
+  // If this flag is not available for some object it MUST be assumed to be
+  // true if the file has the required_features tag "HistoricalInformation"
+  // set.
+  repeated bool visible = 6 [packed = true];
+}

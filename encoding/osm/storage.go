@@ -2,7 +2,6 @@ package osm
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"runtime"
@@ -12,6 +11,7 @@ import (
 	"github.com/dgraph-io/badger/v2"
 	"github.com/dgraph-io/badger/v2/pb"
 	"github.com/goccy/earth-cupsule/format"
+	"github.com/vmihailenco/msgpack/v4"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/xerrors"
 )
@@ -22,10 +22,12 @@ type item struct {
 }
 
 type Storage struct {
-	db     *badger.DB
-	items  []*item
-	mu     sync.Mutex
-	itemMu sync.Mutex
+	db               *badger.DB
+	items            []*item
+	mu               sync.Mutex
+	itemMu           sync.Mutex
+	nodeInWayCache   map[int64]struct{}
+	wayInMemberCache map[int64]struct{}
 }
 
 const (
@@ -46,8 +48,10 @@ func NewStorage(path string) (*Storage, error) {
 		return nil, xerrors.Errorf("failed to open badger db for osm: %w", err)
 	}
 	return &Storage{
-		db:    db,
-		items: []*item{},
+		db:               db,
+		items:            []*item{},
+		nodeInWayCache:   map[int64]struct{}{},
+		wayInMemberCache: map[int64]struct{}{},
 	}, nil
 }
 
@@ -195,8 +199,7 @@ func (s *Storage) SetPos(pos int64) error {
 }
 
 func (s *Storage) AddNode(v *format.Node) error {
-	defer v.Release()
-	bytes, err := json.Marshal(v)
+	bytes, err := msgpack.Marshal(v)
 	if err != nil {
 		return xerrors.Errorf("failed to marshal node: %w", err)
 	}
@@ -207,6 +210,7 @@ func (s *Storage) AddNode(v *format.Node) error {
 }
 
 func (s *Storage) AddNodeInWay(id int64) error {
+	s.nodeInWayCache[id] = struct{}{}
 	if err := s.setItem(s.nodeIDInWay(id), []byte{1}); err != nil {
 		return xerrors.Errorf("failed to add node in way: %w", err)
 	}
@@ -214,6 +218,7 @@ func (s *Storage) AddNodeInWay(id int64) error {
 }
 
 func (s *Storage) AddWayInMember(id int64) error {
+	s.wayInMemberCache[id] = struct{}{}
 	if err := s.setItem(s.wayIDInMember(id), []byte{1}); err != nil {
 		return xerrors.Errorf("failed to add way in member: %w", err)
 	}
@@ -221,7 +226,7 @@ func (s *Storage) AddWayInMember(id int64) error {
 }
 
 func (s *Storage) AddWay(v *format.Way) error {
-	bytes, err := json.Marshal(v)
+	bytes, err := msgpack.Marshal(v)
 	if err != nil {
 		return xerrors.Errorf("failed to marshal way: %w", err)
 	}
@@ -232,7 +237,7 @@ func (s *Storage) AddWay(v *format.Way) error {
 }
 
 func (s *Storage) AddRelation(v *format.Relation) error {
-	bytes, err := json.Marshal(v)
+	bytes, err := msgpack.Marshal(v)
 	if err != nil {
 		return xerrors.Errorf("failed to marshal relation: %w", err)
 	}
@@ -244,7 +249,7 @@ func (s *Storage) AddRelation(v *format.Relation) error {
 
 func (s *Storage) decodeNode(v []byte) (*format.Node, error) {
 	var node format.Node
-	if err := json.Unmarshal(v, &node); err != nil {
+	if err := msgpack.Unmarshal(v, &node); err != nil {
 		return nil, xerrors.Errorf("failed to unmarshal node %s: %w", string(v), err)
 	}
 	return &node, nil
@@ -252,7 +257,7 @@ func (s *Storage) decodeNode(v []byte) (*format.Node, error) {
 
 func (s *Storage) decodeWay(v []byte) (*format.Way, error) {
 	var way format.Way
-	if err := json.Unmarshal(v, &way); err != nil {
+	if err := msgpack.Unmarshal(v, &way); err != nil {
 		return nil, xerrors.Errorf("failed to unmarshal way: %w", err)
 	}
 	for _, ref := range way.NodeRefs {
@@ -270,7 +275,7 @@ func (s *Storage) decodeWay(v []byte) (*format.Way, error) {
 
 func (s *Storage) decodeRelation(v []byte) (*format.Relation, error) {
 	var rel format.Relation
-	if err := json.Unmarshal(v, &rel); err != nil {
+	if err := msgpack.Unmarshal(v, &rel); err != nil {
 		return nil, xerrors.Errorf("failed to unmarshal relation: %w", err)
 	}
 	for _, m := range rel.Members {
@@ -377,11 +382,17 @@ func (s *Storage) ExistsNode(id int64) bool {
 }
 
 func (s *Storage) ExistsNodeInWay(id int64) bool {
+	if _, exists := s.nodeInWayCache[id]; exists {
+		return true
+	}
 	found, _ := s.getItemByKey(s.nodeIDInWay(id))
 	return len(found) > 0 && found[0] == 1
 }
 
 func (s *Storage) ExistsWayInMember(id int64) bool {
+	if _, exists := s.wayInMemberCache[id]; exists {
+		return true
+	}
 	found, _ := s.getItemByKey(s.wayIDInMember(id))
 	return len(found) > 0 && found[0] == 1
 }
