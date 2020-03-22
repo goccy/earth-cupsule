@@ -450,11 +450,9 @@ func (s *Storage) AllNodes(f func(*format.Node) error) error {
 				if err != nil {
 					return xerrors.Errorf("failed to decode node: %w", err)
 				}
-				if exists := s.ExistsNodeInWay(node.ID); exists {
-					if exists := s.ExistsWayInMember(node.ID); !exists {
-						if !node.Tags.HasInterestingTags() {
-							return nil
-						}
+				if s.ExistsNodeInWay(node.ID) && !s.ExistsWayInMember(node.ID) {
+					if !node.Tags.HasInterestingTags() {
+						return nil
 					}
 				}
 				if err := f(node); err != nil {

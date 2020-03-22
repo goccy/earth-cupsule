@@ -11,11 +11,12 @@ import (
 )
 
 type XMLDecoder struct {
-	fsize       int64
-	storage     *Storage
-	xmlDecoder  *xml.Decoder
-	lastElement format.OSM
-	offset      int64
+	fsize        int64
+	storage      *Storage
+	xmlDecoder   *xml.Decoder
+	lastElement  format.OSM
+	offset       int64
+	nodeCallback func(*format.Node) error
 }
 
 func NewXMLDecoder(reader io.Reader, storage *Storage, fsize int64) *XMLDecoder {
@@ -27,6 +28,10 @@ func NewXMLDecoder(reader io.Reader, storage *Storage, fsize int64) *XMLDecoder 
 	}
 }
 
+func (d *XMLDecoder) SetNodeCallback(cb func(*format.Node) error) {
+	d.nodeCallback = cb
+}
+
 func (d *XMLDecoder) IsDecoded() bool {
 	return d.offset >= d.fsize
 }
@@ -35,6 +40,11 @@ func (d *XMLDecoder) setNextElement(e format.OSM) error {
 	if d.lastElement != nil {
 		switch e := d.lastElement.(type) {
 		case *format.Node:
+			if d.nodeCallback != nil && e.Tags.HasInterestingTags() {
+				if err := d.nodeCallback(e); err != nil {
+					return xerrors.Errorf("failed to node callback: %w", err)
+				}
+			}
 			if err := d.storage.AddNode(e); err != nil {
 				return xerrors.Errorf("failed to add node: %w", err)
 			}

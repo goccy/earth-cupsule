@@ -32,6 +32,7 @@ type Decoder struct {
 type StreamDecoder interface {
 	IsDecoded() bool
 	Decode() (int64, error)
+	SetNodeCallback(func(*format.Node) error)
 }
 
 func NewDecoder(path string) (*Decoder, error) {
@@ -113,7 +114,28 @@ func (d *Decoder) Stop() {
 	d.isNeededStop = true
 }
 
+func (d *Decoder) callbackDecodedNodes() error {
+	if d.nodeCallback == nil {
+		return nil
+	}
+	if err := d.storage.AllNodes(func(node *format.Node) error {
+		if d.isNeededStop {
+			return ErrForceStop
+		}
+		if err := d.nodeCallback(node); err != nil {
+			return xerrors.Errorf("failed to node callback: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return xerrors.Errorf("failed to iterate node: %w", err)
+	}
+	return nil
+}
+
 func (d *Decoder) prepare() error {
+	if err := d.callbackDecodedNodes(); err != nil {
+		return xerrors.Errorf("failed to callback for decoded node: %w", err)
+	}
 	if d.dec.IsDecoded() {
 		return nil
 	}
@@ -121,7 +143,8 @@ func (d *Decoder) prepare() error {
 		if d.isNeededStop {
 			return ErrForceStop
 		}
-		if pos, err := d.dec.Decode(); err != nil {
+		pos, err := d.dec.Decode()
+		if err != nil {
 			if xerrors.Is(err, io.EOF) {
 				d.savedPos = pos
 				if err := d.finish(); err != nil {
@@ -130,7 +153,8 @@ func (d *Decoder) prepare() error {
 				break
 			}
 			return xerrors.Errorf("failed to decode: %w", err)
-		} else if pos > 0 {
+		}
+		if pos > 0 {
 			d.savedPos = pos
 		}
 	}
@@ -148,6 +172,7 @@ func (d *Decoder) finish() error {
 }
 
 func (d *Decoder) Node(cb func(*format.Node) error) {
+	d.dec.SetNodeCallback(cb)
 	d.nodeCallback = cb
 }
 
@@ -162,19 +187,6 @@ func (d *Decoder) Relation(cb func(*format.Relation) error) {
 func (d *Decoder) Decode() error {
 	if err := d.prepare(); err != nil {
 		return xerrors.Errorf("failed to prepare decoding: %w", err)
-	}
-	if d.nodeCallback != nil {
-		if err := d.storage.AllNodes(func(node *format.Node) error {
-			if d.isNeededStop {
-				return ErrForceStop
-			}
-			if err := d.nodeCallback(node); err != nil {
-				return xerrors.Errorf("failed to node callback: %w", err)
-			}
-			return nil
-		}); err != nil {
-			return xerrors.Errorf("failed to iterate node: %w", err)
-		}
 	}
 	if d.wayCallback != nil {
 		if err := d.storage.AllWays(func(way *format.Way) error {

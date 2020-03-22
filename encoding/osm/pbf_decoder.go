@@ -56,12 +56,13 @@ type Info struct {
 }
 
 type PBFDecoder struct {
-	fsize   int64
-	storage *Storage
-	offset  int64
-	r       io.Reader
-	buf     *bytes.Buffer
-	header  *Header
+	fsize        int64
+	storage      *Storage
+	offset       int64
+	r            io.Reader
+	buf          *bytes.Buffer
+	header       *Header
+	nodeCallback func(*format.Node) error
 }
 
 func NewPBFDecoder(reader io.Reader, storage *Storage, fsize int64) *PBFDecoder {
@@ -72,6 +73,10 @@ func NewPBFDecoder(reader io.Reader, storage *Storage, fsize int64) *PBFDecoder 
 		r:       reader,
 		buf:     bytes.NewBuffer(make([]byte, 0, bufSize)),
 	}
+}
+
+func (d *PBFDecoder) SetNodeCallback(cb func(*format.Node) error) {
+	d.nodeCallback = cb
 }
 
 func (d *PBFDecoder) IsDecoded() bool {
@@ -303,7 +308,7 @@ func (d *PBFDecoder) decodeNodes(block *pbf.PrimitiveBlock, nodes []*pbf.Node) e
 		tags := d.extractTags(st, node.GetKeys(), node.GetVals())
 		info := d.extractInfo(st, node.GetInfo(), dateGranularity)
 
-		if err := d.storage.AddNode(&format.Node{
+		node := &format.Node{
 			ID:          id,
 			Lat:         latitude,
 			Lon:         longitude,
@@ -314,7 +319,13 @@ func (d *PBFDecoder) decodeNodes(block *pbf.PrimitiveBlock, nodes []*pbf.Node) e
 			ChangesetID: info.Changeset,
 			Timestamp:   info.Timestamp,
 			Tags:        format.Tags(tags),
-		}); err != nil {
+		}
+		if d.nodeCallback != nil {
+			if err := d.nodeCallback(node); err != nil {
+				return xerrors.Errorf("failed to node callback: %w", err)
+			}
+		}
+		if err := d.storage.AddNode(node); err != nil {
 			return xerrors.Errorf("failed to add node: %w", err)
 		}
 	}
@@ -346,7 +357,7 @@ func (d *PBFDecoder) decodeDenseNodes(block *pbf.PrimitiveBlock, nodes *pbf.Dens
 		tags := tu.next()
 		info := d.extractDenseInfo(st, &state, di, index, dateGranularity)
 
-		if err := d.storage.AddNode(&format.Node{
+		node := &format.Node{
 			ID:          id,
 			Lat:         latitude,
 			Lon:         longitude,
@@ -357,7 +368,13 @@ func (d *PBFDecoder) decodeDenseNodes(block *pbf.PrimitiveBlock, nodes *pbf.Dens
 			ChangesetID: info.Changeset,
 			Timestamp:   info.Timestamp,
 			Tags:        format.Tags(tags),
-		}); err != nil {
+		}
+		if d.nodeCallback != nil {
+			if err := d.nodeCallback(node); err != nil {
+				return xerrors.Errorf("failed to node callback: %w", err)
+			}
+		}
+		if err := d.storage.AddNode(node); err != nil {
 			return xerrors.Errorf("failed to add node: %w", err)
 		}
 	}
