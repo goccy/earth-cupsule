@@ -3,11 +3,11 @@ package format
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
-	"sync"
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/vmihailenco/msgpack/v4"
+	"golang.org/x/xerrors"
 )
 
 type OSMType int
@@ -107,8 +107,6 @@ type Node struct {
 	ChangesetID int64     `json:"changeset"`
 	Timestamp   time.Time `json:"timestamp"`
 	Tags        Tags      `json:"tags"`
-
-	buf *buffer
 }
 
 func (n *Node) Type() OSMType {
@@ -131,92 +129,111 @@ func (n *Node) FeatureID() string {
 	return fmt.Sprintf("node/%d", n.ID)
 }
 
-type buffer struct {
-	b []byte
-}
-
-func newBuffer() *buffer {
-	return &buffer{b: make([]byte, 0, 1024)}
-}
-
-func (b *buffer) reset() {
-	b.b = b.b[:0]
-}
-
-func (b *buffer) appendByte(_b byte) {
-	b.b = append(b.b, _b)
-}
-
-func (b *buffer) appendString(s string) {
-	b.b = append(b.b, s...)
-}
-
-func (b *buffer) appendInt(i int64) {
-	b.b = strconv.AppendInt(b.b, i, 10)
-}
-
-func (b *buffer) appendFloat(f float64) {
-	b.b = strconv.AppendFloat(b.b, f, 'E', -1, 64)
-}
-
-func (b *buffer) appendBool(_b bool) {
-	b.b = strconv.AppendBool(b.b, _b)
-}
-
-var bufferpool = sync.Pool{
-	New: func() interface{} {
-		return newBuffer()
-	},
-}
-
-func (n *Node) Release() {
-	n.buf.reset()
-	bufferpool.Put(n.buf)
-}
-
-func (n *Node) MarshalJSON() ([]byte, error) {
-	buf := bufferpool.Get().(*buffer)
-	buf.appendByte('{')
-	buf.appendString(`"id":`)
-	buf.appendInt(n.ID)
-	buf.appendByte(',')
-	buf.appendString(`"lat":`)
-	buf.appendFloat(n.Lat)
-	buf.appendByte(',')
-	buf.appendString(`"lon":`)
-	buf.appendFloat(n.Lon)
-	buf.appendByte(',')
-	buf.appendString(`"user":`)
-	buf.appendString(fmt.Sprintf(`"%s"`, n.User))
-	buf.appendByte(',')
-	buf.appendString(`"userId":`)
-	buf.appendInt(n.UserID)
-	buf.appendByte(',')
-	buf.appendString(`"visible":`)
-	buf.appendBool(n.Visible)
-	buf.appendByte(',')
-	buf.appendString(`"version":`)
-	buf.appendInt(int64(n.Version))
-	buf.appendByte(',')
-	buf.appendString(`"changesetId":`)
-	buf.appendInt(n.ChangesetID)
-	buf.appendByte(',')
-	buf.appendString(`"timestamp":`)
-	buf.appendString(fmt.Sprintf(`"%s"`, n.Timestamp.Format("2006-01-02T15:04:05.9Z")))
-	buf.appendByte(',')
-	buf.appendString(`"tags":{`)
-	i := 0
-	for k, v := range n.Tags {
-		if i > 0 {
-			buf.appendByte(',')
-		}
-		buf.appendString(fmt.Sprintf(`"%s":%s`, k, strconv.Quote(v)))
-		i++
+func (n *Node) EncodeMsgpack(enc *msgpack.Encoder) error {
+	if err := enc.EncodeInt64(n.ID); err != nil {
+		return xerrors.Errorf("failed to encode id: %w", err)
 	}
-	buf.appendByte('}')
-	buf.appendByte('}')
-	n.buf = buf
-	return buf.b, nil
+	if err := enc.EncodeFloat64(n.Lat); err != nil {
+		return xerrors.Errorf("failed to encode lat: %w", err)
+	}
+	if err := enc.EncodeFloat64(n.Lon); err != nil {
+		return xerrors.Errorf("failed to encode lon: %w", err)
+	}
+	if err := enc.EncodeString(n.User); err != nil {
+		return xerrors.Errorf("failed to encode user: %w", err)
+	}
+	if err := enc.EncodeInt64(n.UserID); err != nil {
+		return xerrors.Errorf("failed to encode user_id: %w", err)
+	}
+	if err := enc.EncodeBool(n.Visible); err != nil {
+		return xerrors.Errorf("failed to encode visible: %w", err)
+	}
+	if err := enc.EncodeInt64(n.Version); err != nil {
+		return xerrors.Errorf("failed to encode version: %w", err)
+	}
+	if err := enc.EncodeInt64(n.ChangesetID); err != nil {
+		return xerrors.Errorf("failed to encode changeset: %w", err)
+	}
+	if err := enc.EncodeTime(n.Timestamp); err != nil {
+		return xerrors.Errorf("failed to encode timestamp: %w", err)
+	}
+	if err := enc.EncodeMapLen(len(n.Tags)); err != nil {
+		return xerrors.Errorf("failed to encode tags length: %w", err)
+	}
+	for k, v := range n.Tags {
+		if err := enc.EncodeString(k); err != nil {
+			return xerrors.Errorf("failed to encode key: %w", err)
+		}
+		if err := enc.EncodeString(v); err != nil {
+			return xerrors.Errorf("failed to encode value: %w", err)
+		}
+	}
+	return nil
+}
+
+func (n *Node) DecodeMsgpack(dec *msgpack.Decoder) error {
+	id, err := dec.DecodeInt64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode id: %w", err)
+	}
+	lat, err := dec.DecodeFloat64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode lat: %w", err)
+	}
+	lon, err := dec.DecodeFloat64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode lon: %w", err)
+	}
+	user, err := dec.DecodeString()
+	if err != nil {
+		return xerrors.Errorf("failed to decode user: %w", err)
+	}
+	userID, err := dec.DecodeInt64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode user_id: %w", err)
+	}
+	visible, err := dec.DecodeBool()
+	if err != nil {
+		return xerrors.Errorf("failed to decode visible: %w", err)
+	}
+	version, err := dec.DecodeInt64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode version: %w", err)
+	}
+	changeset, err := dec.DecodeInt64()
+	if err != nil {
+		return xerrors.Errorf("failed to decode changeset: %w", err)
+	}
+	timestamp, err := dec.DecodeTime()
+	if err != nil {
+		return xerrors.Errorf("failed to decode timestamp: %w", err)
+	}
+	tagLen, err := dec.DecodeMapLen()
+	if err != nil {
+		return xerrors.Errorf("failed to decode tags length: %w", err)
+	}
+	n.ID = id
+	n.Lat = lat
+	n.Lon = lon
+	n.User = user
+	n.UserID = userID
+	n.Visible = visible
+	n.Version = version
+	n.ChangesetID = changeset
+	n.Timestamp = timestamp
+	n.Tags = make(Tags, tagLen)
+	for i := 0; i < tagLen; i++ {
+		key, err := dec.DecodeString()
+		if err != nil {
+			return xerrors.Errorf("failed to decode tag key: %w", err)
+		}
+		value, err := dec.DecodeString()
+		if err != nil {
+			return xerrors.Errorf("failed to decode tag value: %w", err)
+		}
+		n.Tags[key] = value
+	}
+	return nil
 }
 
 func (n *Node) GetID() int64 {
