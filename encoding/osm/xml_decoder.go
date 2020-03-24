@@ -28,6 +28,8 @@ func NewXMLDecoder(reader io.Reader, storage *Storage, fsize int64) *XMLDecoder 
 	}
 }
 
+func (d *XMLDecoder) Close() {}
+
 func (d *XMLDecoder) SetNodeCallback(cb func(*format.Node) error) {
 	d.nodeCallback = cb
 }

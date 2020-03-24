@@ -33,6 +33,7 @@ type StreamDecoder interface {
 	IsDecoded() bool
 	Decode() (int64, error)
 	SetNodeCallback(func(*format.Node) error)
+	Close()
 }
 
 func NewDecoder(path string) (*Decoder, error) {
@@ -87,6 +88,7 @@ func NewDecoder(path string) (*Decoder, error) {
 }
 
 func (d *Decoder) close() error {
+	d.dec.Close()
 	if d.savedPos > 0 {
 		if err := d.finish(); err != nil {
 			return xerrors.Errorf("failed to finish: %w", err)

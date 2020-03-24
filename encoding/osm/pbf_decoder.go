@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"runtime"
+	"sync"
 	"time"
 
 	"github.com/goccy/earth-cupsule/format"
@@ -55,23 +57,34 @@ type Info struct {
 	Visible   bool
 }
 
+type decodeResult struct {
+	offset int64
+	err    error
+}
+
 type PBFDecoder struct {
-	fsize        int64
-	storage      *Storage
-	offset       int64
-	r            io.Reader
-	buf          *bytes.Buffer
-	header       *Header
-	nodeCallback func(*format.Node) error
+	fsize         int64
+	storage       *Storage
+	offset        int64
+	r             io.Reader
+	buf           *bytes.Buffer
+	header        *Header
+	nodeCallback  func(*format.Node) error
+	onceStart     sync.Once
+	onceClose     sync.Once
+	blockIndex    int
+	concurrentNum int
+	blocks        []chan *Block
 }
 
 func NewPBFDecoder(reader io.Reader, storage *Storage, fsize int64) *PBFDecoder {
 	return &PBFDecoder{
-		fsize:   fsize,
-		storage: storage,
-		offset:  storage.Pos(),
-		r:       reader,
-		buf:     bytes.NewBuffer(make([]byte, 0, bufSize)),
+		fsize:         fsize,
+		storage:       storage,
+		offset:        storage.Pos(),
+		r:             reader,
+		buf:           bytes.NewBuffer(make([]byte, 0, bufSize)),
+		concurrentNum: runtime.NumCPU(),
 	}
 }
 
@@ -83,19 +96,43 @@ func (d *PBFDecoder) IsDecoded() bool {
 	return d.offset >= d.fsize
 }
 
-func (d *PBFDecoder) Decode() (int64, error) {
-	if d.offset == 0 {
-		header, size, err := d.readOSMHeader()
-		if err != nil {
-			return 0, xerrors.Errorf("failed to read osm header: %w", err)
+func (d *PBFDecoder) Close() {
+	d.onceClose.Do(func() {})
+}
+
+func (d *PBFDecoder) Decode() (offset int64, e error) {
+	d.onceStart.Do(func() {
+		if d.offset == 0 {
+			header, size, err := d.readOSMHeader()
+			if err != nil {
+				e = xerrors.Errorf("failed to read osm header: %w", err)
+			}
+			d.offset += size
+			d.header = header
 		}
-		d.offset += size
-		d.header = header
-	}
-	size, err := d.decodeOSMData()
+
+		block := make(chan *Block)
+		for i := 0; i < d.concurrentNum; i++ {
+			go func() {
+				for blk := range block {
+					if err := d.decodeAsOSMData(blk); err != nil {
+						e = xerrors.Errorf("failed to decode as osm header: %w", err)
+						d.Close()
+					}
+				}
+			}()
+			d.blocks = append(d.blocks, block)
+		}
+	})
+	blk, size, err := d.readBlock()
 	if err != nil {
-		return 0, xerrors.Errorf("failed to read osm data: %w", err)
+		d.Close()
+		return 0, xerrors.Errorf("failed to read block: %w", err)
 	}
+
+	block := d.blocks[d.blockIndex]
+	d.blockIndex = (d.blockIndex + 1) % d.concurrentNum
+	block <- blk
 	d.offset += size
 	return d.offset, nil
 }

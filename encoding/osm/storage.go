@@ -25,8 +25,8 @@ type Storage struct {
 	items            []*item
 	mu               sync.Mutex
 	itemMu           sync.Mutex
-	nodeInWayCache   map[int64]struct{}
-	wayInMemberCache map[int64]struct{}
+	nodeInWayCache   sync.Map
+	wayInMemberCache sync.Map
 }
 
 const (
@@ -47,10 +47,8 @@ func NewStorage(path string) (*Storage, error) {
 		return nil, xerrors.Errorf("failed to open badger db for osm: %w", err)
 	}
 	return &Storage{
-		db:               db,
-		items:            []*item{},
-		nodeInWayCache:   map[int64]struct{}{},
-		wayInMemberCache: map[int64]struct{}{},
+		db:    db,
+		items: []*item{},
 	}, nil
 }
 
@@ -209,7 +207,7 @@ func (s *Storage) AddNode(v *format.Node) error {
 }
 
 func (s *Storage) AddNodeInWay(id int64) error {
-	s.nodeInWayCache[id] = struct{}{}
+	s.nodeInWayCache.Store(id, struct{}{})
 	if err := s.setItem(s.nodeIDInWay(id), []byte{1}); err != nil {
 		return xerrors.Errorf("failed to add node in way: %w", err)
 	}
@@ -217,7 +215,7 @@ func (s *Storage) AddNodeInWay(id int64) error {
 }
 
 func (s *Storage) AddWayInMember(id int64) error {
-	s.wayInMemberCache[id] = struct{}{}
+	s.wayInMemberCache.Store(id, struct{}{})
 	if err := s.setItem(s.wayIDInMember(id), []byte{1}); err != nil {
 		return xerrors.Errorf("failed to add way in member: %w", err)
 	}
@@ -381,7 +379,7 @@ func (s *Storage) ExistsNode(id int64) bool {
 }
 
 func (s *Storage) ExistsNodeInWay(id int64) bool {
-	if _, exists := s.nodeInWayCache[id]; exists {
+	if _, exists := s.nodeInWayCache.Load(id); exists {
 		return true
 	}
 	found, _ := s.getItemByKey(s.nodeIDInWay(id))
@@ -389,7 +387,7 @@ func (s *Storage) ExistsNodeInWay(id int64) bool {
 }
 
 func (s *Storage) ExistsWayInMember(id int64) bool {
-	if _, exists := s.wayInMemberCache[id]; exists {
+	if _, exists := s.wayInMemberCache.Load(id); exists {
 		return true
 	}
 	found, _ := s.getItemByKey(s.wayIDInMember(id))
