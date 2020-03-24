@@ -12,7 +12,6 @@ import (
 	"github.com/dgraph-io/badger/v2/pb"
 	"github.com/goccy/earth-cupsule/format"
 	"github.com/vmihailenco/msgpack/v4"
-	"golang.org/x/sync/errgroup"
 	"golang.org/x/xerrors"
 )
 
@@ -426,134 +425,97 @@ func (s *Storage) All(f func([]byte, []byte) error) error {
 	return nil
 }
 
-func (s *Storage) AllNodes(f func(*format.Node) error) error {
+type decodeValue struct {
+	v []byte
+}
+
+func (s *Storage) concurrentDecode(prefix []byte, decodeFn func([]byte) error) (e error) {
 	stream := s.db.NewStream()
-	stream.Prefix = []byte("node")
+	stream.Prefix = prefix
 	cpus := runtime.NumCPU()
-	var (
-		idx int
-		eg  errgroup.Group
-	)
+	decoders := []chan decodeValue{}
+	for i := 0; i < cpus; i++ {
+		decoder := make(chan decodeValue)
+		go func() {
+			for dec := range decoder {
+				if err := decodeFn(dec.v); err != nil {
+					e = xerrors.Errorf("failed to decode function: %w", err)
+					for _, decoder := range decoders {
+						close(decoder)
+					}
+				}
+			}
+		}()
+		decoders = append(decoders, decoder)
+	}
+	var decoderIndex int
 	stream.Send = func(kvl *pb.KVList) error {
 		kvs := kvl.GetKv()
 		for _, kv := range kvs {
-			value := kv.GetValue()
-			if idx == cpus {
-				if err := eg.Wait(); err != nil {
-					return xerrors.Errorf("failed to wait: %w", err)
-				}
-				idx = 0
-			}
-			idx++
-			eg.Go(func() error {
-				node, err := s.decodeNode(value)
-				if err != nil {
-					return xerrors.Errorf("failed to decode node: %w", err)
-				}
-				if s.ExistsNodeInWay(node.ID) && !s.ExistsWayInMember(node.ID) {
-					if !node.Tags.HasInterestingTags() {
-						return nil
-					}
-				}
-				if err := f(node); err != nil {
-					return xerrors.Errorf("failed to get value: %w", err)
-				}
-				return nil
-			})
+			decoder := decoders[decoderIndex]
+			decoderIndex = (decoderIndex + 1) % cpus
+			decoder <- decodeValue{kv.GetValue()}
 		}
 		return nil
 	}
 	if err := stream.Orchestrate(context.Background()); err != nil {
 		return xerrors.Errorf("failed to streaming: %w", err)
 	}
-	if idx > 0 {
-		if err := eg.Wait(); err != nil {
-			return xerrors.Errorf("failed to wait: %w", err)
-		}
+	for _, decoder := range decoders {
+		close(decoder)
 	}
 	return nil
 }
 
-func (s *Storage) AllWays(f func(*format.Way) error) error {
-	stream := s.db.NewStream()
-	stream.Prefix = []byte("way")
-	cpus := runtime.NumCPU()
-	var (
-		idx int
-		eg  errgroup.Group
-	)
-	stream.Send = func(kvl *pb.KVList) error {
-		for _, kv := range kvl.GetKv() {
-			value := kv.GetValue()
-			if idx == cpus {
-				if err := eg.Wait(); err != nil {
-					return xerrors.Errorf("failed to wait: %w", err)
-				}
-				idx = 0
-			}
-			idx++
-			eg.Go(func() error {
-				way, err := s.decodeWay(value)
-				if err != nil {
-					return xerrors.Errorf("failed to decode way: %w", err)
-				}
-				if err := f(way); err != nil {
-					return xerrors.Errorf("failed to get value: %w", err)
-				}
+func (s *Storage) AllNodes(f func(*format.Node) error) (e error) {
+	if err := s.concurrentDecode([]byte("node"), func(value []byte) error {
+		node, err := s.decodeNode(value)
+		if err != nil {
+			return xerrors.Errorf("failed to decode node: %w", err)
+		}
+		if s.ExistsNodeInWay(node.ID) && !s.ExistsWayInMember(node.ID) {
+			if !node.Tags.HasInterestingTags() {
 				return nil
-			})
+			}
+		}
+		if err := f(node); err != nil {
+			return xerrors.Errorf("failed to get value: %w", err)
 		}
 		return nil
-	}
-	if err := stream.Orchestrate(context.Background()); err != nil {
-		return xerrors.Errorf("failed to streaming: %w", err)
-	}
-	if idx > 0 {
-		if err := eg.Wait(); err != nil {
-			return xerrors.Errorf("failed to wait: %w", err)
-		}
+	}); err != nil {
+		return xerrors.Errorf("failed to concurrent decode: %w", err)
 	}
 	return nil
 }
 
-func (s *Storage) AllRelations(f func(*format.Relation) error) error {
-	stream := s.db.NewStream()
-	stream.Prefix = []byte("rel")
-	cpus := runtime.NumCPU()
-	var (
-		idx int
-		eg  errgroup.Group
-	)
-	stream.Send = func(kvl *pb.KVList) error {
-		for _, kv := range kvl.GetKv() {
-			value := kv.GetValue()
-			if idx == cpus {
-				if err := eg.Wait(); err != nil {
-					return xerrors.Errorf("failed to wait: %w", err)
-				}
-				idx = 0
-			}
-			idx++
-			eg.Go(func() error {
-				rel, err := s.decodeRelation(value)
-				if err != nil {
-					return xerrors.Errorf("failed to decode relation: %w", err)
-				}
-				if err := f(rel); err != nil {
-					return xerrors.Errorf("failed to get value: %w", err)
-				}
-				return nil
-			})
+func (s *Storage) AllWays(f func(*format.Way) error) (e error) {
+	if err := s.concurrentDecode([]byte("way"), func(value []byte) error {
+		way, err := s.decodeWay(value)
+		if err != nil {
+			return xerrors.Errorf("failed to decode way: %w", err)
+		}
+		if err := f(way); err != nil {
+			return xerrors.Errorf("failed to get value: %w", err)
 		}
 		return nil
+	}); err != nil {
+		return xerrors.Errorf("failed to concurrent decode: %w", err)
 	}
-	if err := stream.Orchestrate(context.Background()); err != nil {
-		return xerrors.Errorf("failed to streaming: %w", err)
-	}
-	if idx > 0 {
-		if err := eg.Wait(); err != nil {
-			return xerrors.Errorf("failed to wait: %w", err)
+	return nil
+}
+
+func (s *Storage) AllRelations(f func(*format.Relation) error) (e error) {
+	if err := s.concurrentDecode([]byte("rel"), func(value []byte) error {
+		rel, err := s.decodeRelation(value)
+		if err != nil {
+			return xerrors.Errorf("failed to decode relation: %w", err)
 		}
+		if err := f(rel); err != nil {
+			return xerrors.Errorf("failed to get value: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return xerrors.Errorf("failed to concurrent decode: %w", err)
 	}
 	return nil
 }
